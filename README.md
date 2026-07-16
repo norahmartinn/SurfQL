@@ -1,6 +1,6 @@
 # 🌊 SurfQL — un año de surf en la Zurriola, en SQL
 
-Base de datos SQLite que modela **un año de surf en la playa de la Zurriola** (Donostia / San Sebastián): las condiciones del mar en cada franja del día, los surfistas habituales con sus tablas, y casi 5.000 sesiones de surf repartidas entre los picos de Sagüés, el centro y el lado del Kursaal.
+Base de datos SQLite que modela **un año de surf en la playa de la Zurriola** (Donostia / San Sebastián): las **condiciones reales del mar** (oleaje, viento, marea y temperatura del agua, descargadas de la API abierta de Open-Meteo), los surfistas habituales con sus tablas, y casi 5.000 sesiones de surf simuladas sobre esas condiciones, repartidas entre los picos de Sagüés, el centro y el lado del Kursaal.
 
 El objetivo del proyecto es demostrar diseño relacional y SQL analítico sobre un dominio que conozco: joins múltiples, CTEs, funciones de ventana, gaps & islands, pivotes con agregación condicional, vistas e integridad referencial.
 
@@ -56,18 +56,21 @@ Además del esquema hay una vista (`v_sesiones`) que desnormaliza los joins habi
 
 ## Los datos
 
-Los datos son sintéticos pero están generados con lógica realista ([`tools/generar_datos.py`](tools/generar_datos.py)):
+**Las condiciones del mar son reales.** [`tools/descargar_condiciones.py`](tools/descargar_condiciones.py) las descarga de las APIs abiertas de [Open-Meteo](https://open-meteo.com/) (sin API key) para las coordenadas de la Zurriola, de julio de 2025 a junio de 2026:
 
-- **Estacionalidad cantábrica**: mar grande en otoño-invierno (media de 2,2 m en enero), verano flojo (0,6 m en agosto); agua de 12 °C en invierno a 21 °C en verano.
-- **El viento manda**: en la Zurriola el viento de componente sur es *offshore* (ordena el mar) y el norte *onshore* (lo destroza), y las valoraciones de las sesiones lo reflejan.
-- **Comportamiento humano**: los principiantes no se meten los días grandes, entre semana a mediodía surfea poca gente, y cuanto mejores son las condiciones más gente hay en el agua.
+- **Marine API**: altura y periodo de ola, temperatura del agua y altura del mar (de la que se deduce si la marea sube o baja).
+- **Archive API**: velocidad y dirección del viento a 10 m.
 
-| tabla | filas |
-|---|---|
-| surfistas | 15 |
-| tablas | 27 |
-| condiciones | 1.095 (365 días × 3 franjas) |
-| sesiones | ~4.900 |
+De las series horarias se extraen tres franjas al día (amanecer, mediodía y tarde) y se guardan en [`datos/condiciones_reales.csv`](datos/condiciones_reales.csv). Ahí está el año real del Cantábrico: temporales de invierno de hasta 4,4 m, veranos de 0,9 m de media y agua de 13 °C en febrero a 23 °C en agosto.
+
+**Las sesiones son simuladas** (no existe un registro de quién se mete al agua), pero [`tools/generar_datos.py`](tools/generar_datos.py) las genera sobre las condiciones reales con lógica plausible: en la Zurriola el viento de componente sur es *offshore* (ordena el mar) y el norte *onshore* (lo destroza), los principiantes no se meten los días grandes, entre semana a mediodía surfea poca gente, y cuanto mejores son las condiciones más gente hay en el agua y mejores valoraciones dan.
+
+| tabla | filas | origen |
+|---|---|---|
+| surfistas | 15 | ficticios |
+| tablas | 27 | ficticias |
+| condiciones | 1.095 (365 días × 3 franjas) | **reales (Open-Meteo)** |
+| sesiones | ~5.000 | simuladas sobre las condiciones reales |
 
 ## Cómo ejecutarlo
 
@@ -81,7 +84,12 @@ sqlite3 zurriola.db < seed.sql     # carga el año de datos
 sqlite3 -column -header zurriola.db < queries/01_mejores_dias.sql
 ```
 
-Para regenerar los datos desde cero: `python3 tools/generar_datos.py > seed.sql`.
+Para regenerar los datos desde cero (por ejemplo con otro rango de fechas):
+
+```bash
+python3 tools/descargar_condiciones.py        # baja las condiciones reales de Open-Meteo
+python3 tools/generar_datos.py > seed.sql     # condiciones reales + sesiones simuladas
+```
 
 ## Consultas analíticas
 
@@ -100,14 +108,14 @@ Cada archivo de [`queries/`](queries/) responde una pregunta real y demuestra t�
 
 ### Algunos resultados
 
-**Los 10 mejores días del año** (query 01) — todos con viento sur y ola de 1,2-1,6 m:
+**Los mejores días del año** (query 01) — con condiciones reales, ganan los otoños e inviernos con mar de fondo y viento sur; el mejor día del año fue el 9 de noviembre de 2025 (1,5 m, 13 s de periodo, sureste):
 
 ```
 fecha       sesiones  valoracion_media  ola_m  periodo_s  viento
 ----------  --------  ----------------  -----  ---------  ------
-2025-10-20  18        8.67              1.3    10.9       S
-2025-10-08  16        8.56              1.19   8.4        S
-2026-03-27  19        8.47              1.25   11.3       S
+2025-11-09  28        8.86              1.47   13.1       SE
+2025-12-11  19        8.74              1.44   12.4       S
+2025-11-10  18        8.67              1.47   13.2       SO
 ```
 
 **Ola × viento** (query 03) — el offshore mejora la valoración en todos los tamaños, y el punto dulce es el mar entre 0,8 y 2,2 m:
@@ -115,28 +123,31 @@ fecha       sesiones  valoracion_media  ola_m  periodo_s  viento
 ```
 tamano                offshore  lateral  onshore  sesiones
 --------------------  --------  -------  -------  --------
-1. pequeño (<0.8 m)   5.81      4.92     4.97     854
-2. medio (0.8-1.5 m)  7.71      6.93     6.65     2096
-3. bueno (1.5-2.2 m)  7.62      7.1      6.84     1535
-4. grande (>2.2 m)    6.24      5.76     5.33     412
+1. pequeño (<0.8 m)   6.29      5.55     5.16     1397
+2. medio (0.8-1.5 m)  8.04      7.09     6.76     1982
+3. bueno (1.5-2.2 m)  7.85      7.05     6.87     1246
+4. grande (>2.2 m)    6.38      5.19     5.14     369
 ```
 
-**Zona × marea** (query 06) — las tres zonas rinden mejor a media marea, y Sagüés es donde más olas se cogen:
+**Zona × marea** (query 06) — Sagüés es donde más olas se cogen, y la media marea es la que mejor funciona:
 
 ```
 zona     tramo_marea  sesiones  valoracion_media  olas_media
 -------  -----------  --------  ----------------  ----------
-Sagüés   baja         502       6.55              13.0
-Sagüés   media        785       7.02              14.1
-Sagüés   alta         733       6.61              13.2
+Sagüés   baja         535       6.67              13.7
+Sagüés   media        902       6.76              14.0
+Sagüés   alta         609       6.79              13.7
 ```
 
 ## Estructura del repo
 
 ```
-├── schema.sql            # DDL: tablas, restricciones, índices y vista
-├── seed.sql              # un año de datos (generado)
-├── queries/              # 8 consultas analíticas comentadas
+├── schema.sql                    # DDL: tablas, restricciones, índices y vista
+├── seed.sql                      # un año de datos (generado)
+├── queries/                      # 8 consultas analíticas comentadas
+├── datos/
+│   └── condiciones_reales.csv    # condiciones reales descargadas de Open-Meteo
 └── tools/
-    └── generar_datos.py  # generador de datos sintéticos realistas
+    ├── descargar_condiciones.py  # descarga las condiciones reales (Open-Meteo)
+    └── generar_datos.py          # simula las sesiones sobre las condiciones reales
 ```

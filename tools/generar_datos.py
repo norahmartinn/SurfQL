@@ -1,24 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-Genera seed.sql con un año de datos sintéticos pero realistas
-de surf en la Zurriola (jul 2025 - jun 2026).
+Genera seed.sql combinando:
 
-Realismo que se intenta capturar:
-  · más mar en otoño/invierno, verano más flojo
-  · viento S/SO (offshore en la Zurriola) => mejores sesiones
-  · temperatura del agua estacional (12-22 ºC)
-  · los surfistas salen más cuando las condiciones acompañan,
-    y los principiantes evitan los días grandes
-  · la valoración de la sesión depende de las condiciones
+  · CONDICIONES REALES del mar frente a la Zurriola (jul 2025 - jun 2026),
+    descargadas de Open-Meteo en datos/condiciones_reales.csv
+    (ver tools/descargar_condiciones.py)
+
+  · SESIONES SIMULADAS encima de esas condiciones reales, con lógica
+    plausible: la gente sale más cuando las condiciones acompañan
+    (en la Zurriola el viento de componente sur es offshore y ordena
+    el mar), los principiantes evitan los días grandes, entre semana
+    a mediodía surfea poca gente, y la valoración de cada sesión
+    depende de lo buenas que fueran las condiciones.
 
 Uso:  python3 tools/generar_datos.py > seed.sql
 """
 
+import csv
 import math
+import os
 import random
-from datetime import date, timedelta
+from datetime import date
 
 random.seed(2026)  # reproducible
+
+CSV_CONDICIONES = os.path.join("datos", "condiciones_reales.csv")
 
 # ------------------------------------------------------------------
 # Surfistas: (nombre, nivel, stance, año inicio, barrio)
@@ -48,24 +54,12 @@ TABLAS_POR_NIVEL = {
     "principiante": [("evolutiva", (7.0, 8.0), (48, 62)), ("longboard", (8.5, 9.6), (60, 80))],
 }
 
-FRANJAS = ["amanecer", "mediodia", "tarde"]
-VIENTOS = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
 # En la Zurriola el offshore es S/SO/SE; el onshore N/NO/NE
 OFFSHORE = {"S": 1.0, "SO": 0.9, "SE": 0.8, "O": 0.4, "E": 0.4, "NE": 0.15, "NO": 0.1, "N": 0.0}
-
-INICIO = date(2025, 7, 1)
-FIN = date(2026, 6, 30)
 
 
 def q(s):
     return "'" + s.replace("'", "''") + "'"
-
-
-def estacionalidad(d):
-    """0 en pleno verano, 1 en pleno invierno (para tamaño de mar)."""
-    dia = d.timetuple().tm_yday
-    # pico de invierno hacia mediados de enero (día ~15)
-    return 0.5 - 0.5 * math.cos(2 * math.pi * (dia - 15) / 365.25 + math.pi)
 
 
 def calidad(altura, periodo, viento_dir, viento_kmh, altura_marea):
@@ -85,6 +79,8 @@ def calidad(altura, periodo, viento_dir, viento_kmh, altura_marea):
 
 def main():
     print("-- Archivo generado por tools/generar_datos.py — no editar a mano.")
+    print("-- Condiciones: datos reales de Open-Meteo (datos/condiciones_reales.csv).")
+    print("-- Sesiones: simuladas sobre esas condiciones reales.")
     print("PRAGMA foreign_keys = ON;")
     print("BEGIN TRANSACTION;")
 
@@ -106,40 +102,30 @@ def main():
             print("INSERT INTO tablas VALUES (%d, %d, %s, %.1f, %.1f);"
                   % (tabla_id, sid, q(tipo), random.uniform(lmin, lmax), random.uniform(vmin, vmax)))
 
-    # ---- condiciones y sesiones ----
+    # ---- condiciones reales + sesiones simuladas ----
     condicion_id = 0
     sesion_id = 0
-    d = INICIO
-    # estado del swell con algo de persistencia entre días
-    swell = 1.0
-    while d <= FIN:
-        inv = estacionalidad(d)  # 0 verano, 1 invierno
-        # el swell evoluciona día a día (persistencia + estacionalidad)
-        objetivo = 0.6 + 1.5 * inv
-        swell += 0.45 * (objetivo - swell) + random.gauss(0, 0.35)
-        swell = max(0.15, min(swell, 4.0))
-        temp_agua = 12.5 + 9.0 * (1 - inv) + random.gauss(0, 0.6)
-        # dirección de viento del día (cambia poco entre franjas)
-        viento_dia = random.choices(VIENTOS, weights=[14, 10, 6, 8, 12, 14, 10, 16])[0]
-
-        for fi, franja in enumerate(FRANJAS):
+    with open(CSV_CONDICIONES, newline="") as f:
+        for fila in csv.DictReader(f):
             condicion_id += 1
-            altura = max(0.1, swell + random.gauss(0, 0.15))
-            periodo = max(4.0, min(19.0, 7.0 + 4.5 * inv + 2.5 * (altura - 1) + random.gauss(0, 1.2)))
-            # al amanecer suele haber menos viento (térmica)
-            viento_dir = viento_dia if random.random() < 0.75 else random.choice(VIENTOS)
-            viento_kmh = max(0.0, random.gauss(8 + 6 * fi * 0.8 + 6 * inv, 5))
-            marea = random.choice(["subiendo", "bajando"])
-            altura_marea = round(random.uniform(0.4, 4.6), 1)
+            fecha = fila["fecha"]
+            franja = fila["franja"]
+            altura = float(fila["altura_ola_m"])
+            periodo = float(fila["periodo_s"])
+            viento_dir = fila["direccion_viento"]
+            viento_kmh = float(fila["viento_kmh"])
+            marea = fila["marea"]
+            altura_marea = float(fila["altura_marea_m"])
+            temp_agua = float(fila["temp_agua_c"])
 
-            print("INSERT INTO condiciones VALUES (%d, %s, %s, %.2f, %.1f, %s, %.1f, %s, %.1f, %.1f);"
-                  % (condicion_id, q(d.isoformat()), q(franja), altura, periodo,
+            print("INSERT INTO condiciones VALUES (%d, %s, %s, %.2f, %.1f, %s, %.1f, %s, %.2f, %.1f);"
+                  % (condicion_id, q(fecha), q(franja), altura, periodo,
                      q(viento_dir), viento_kmh, q(marea), altura_marea, temp_agua))
 
             cal = calidad(altura, periodo, viento_dir, viento_kmh, altura_marea)
+            finde = date.fromisoformat(fecha).weekday() >= 5
 
             # ---- ¿quién se mete al agua en esta franja? ----
-            finde = d.weekday() >= 5
             for sid, (_, nivel, _, _, _) in enumerate(SURFISTAS, start=1):
                 p = 0.05 + 0.55 * cal
                 if nivel == "principiante":
@@ -166,7 +152,6 @@ def main():
 
                 print("INSERT INTO sesiones VALUES (%d, %d, %d, %d, %s, %d, %d, %d);"
                       % (sesion_id, sid, tabla, condicion_id, q(zona), duracion, olas, valoracion))
-        d += timedelta(days=1)
 
     print("COMMIT;")
 
