@@ -1,4 +1,4 @@
-# 🌊 Surf en la Zurriola — proyecto SQL
+# 🌊 SurfQL — un año de surf en la Zurriola, en SQL
 
 Base de datos SQLite que modela **un año de surf en la playa de la Zurriola** (Donostia / San Sebastián): las condiciones del mar en cada franja del día, los surfistas habituales con sus tablas, y casi 5.000 sesiones de surf repartidas entre los picos de Sagüés, el centro y el lado del Kursaal.
 
