@@ -1,0 +1,2 @@
+# la base de datos se reconstruye con schema.sql + seed.sql
+*.db
